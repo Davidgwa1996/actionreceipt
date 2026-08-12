@@ -37,6 +37,12 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Search, Filter & Expansion State
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
+  const [showDemoInExplorer, setShowDemoInExplorer] = useState<boolean>(false);
+
   // Growth Simulator State - Basket Value Tier Mix (sums to 100)
   const [dailyTxCount, setDailyTxCount] = useState<number>(100000000);
   const [mixUnder5, setMixUnder5] = useState<number>(20);   // Under £5 (FREE)
@@ -72,16 +78,21 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
 
   useEffect(() => {
     fetchOpsData();
+    const interval = setInterval(() => {
+      fetchOpsData();
+    }, 30000);
+    return () => clearInterval(interval);
   }, []);
 
-  // Live Metrics Calculations from real transactions
-  const liveCalculatedPricingList = transactions.map(t => calculatePricing(t.itemPrice, t.currency));
-  const liveGrossVolume = transactions.reduce((acc, t) => acc + t.itemPrice, 0);
-  const liveGrossFees = liveCalculatedPricingList.reduce((acc, p) => acc + p.protectionFee, 0);
-  const liveSellerRewards = liveCalculatedPricingList.reduce((acc, p) => acc + p.sellerReward, 0);
-  const liveOpsRevenue = liveCalculatedPricingList.reduce((acc, p) => acc + p.opsRevenue, 0);
-  const liveFreeOrders = transactions.filter(t => t.itemPrice < 5).length;
-  const livePaidOrders = transactions.filter(t => t.itemPrice >= 5).length;
+  // Live Production Metrics Calculations (only strictly real live production transactions)
+  const liveProductionTransactions = transactions.filter(t => (t as any).isLiveProduction === true);
+  const liveCalculatedPricingList = liveProductionTransactions.map(t => calculatePricing(t.itemPrice, t.currency));
+  const liveGrossVolume = liveProductionTransactions.reduce((acc, t) => acc + (t.itemPrice || 0), 0);
+  const liveGrossFees = liveCalculatedPricingList.reduce((acc, p) => acc + (p.protectionFee || 0), 0);
+  const liveSellerRewards = liveCalculatedPricingList.reduce((acc, p) => acc + (p.sellerReward || 0), 0);
+  const liveOpsRevenue = liveCalculatedPricingList.reduce((acc, p) => acc + (p.opsRevenue || 0), 0);
+  const liveFreeOrders = liveProductionTransactions.filter(t => (t.itemPrice || 0) < 5).length;
+  const livePaidOrders = liveProductionTransactions.filter(t => (t.itemPrice || 0) >= 5).length;
 
   // Simulator Calculations
   const totalMix = mixUnder5 + mix5to10 + mix10to15 + mix15to45 + mix45to100 + mix100to300 + mix300to500 + mix500to800 || 100;
@@ -236,25 +247,25 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 text-xs">
                   <div className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 space-y-1">
                     <span className="text-slate-400 uppercase text-[10px]">Protected Gross Volume</span>
-                    <p className="text-2xl font-extrabold text-white">£{(liveGrossVolume || metrics?.grossVolumeUsd || 0).toFixed(2)}</p>
-                    <span className="text-[10px] text-emerald-400">{transactions.length} Total Orders</span>
+                    <p className="text-2xl font-extrabold text-white">£{liveGrossVolume.toFixed(2)}</p>
+                    <span className="text-[10px] text-emerald-400">{liveProductionTransactions.length} Total Orders</span>
                   </div>
 
                   <div className="p-5 bg-slate-900/80 rounded-2xl border border-emerald-500/30 space-y-1 bg-emerald-950/10">
                     <span className="text-slate-400 uppercase text-[10px]">Gross Protection Fees</span>
-                    <p className="text-2xl font-extrabold text-emerald-400">£{(liveGrossFees || metrics?.totalPlatformFeesUsd || 0).toFixed(2)}</p>
+                    <p className="text-2xl font-extrabold text-emerald-400">£{liveGrossFees.toFixed(2)}</p>
                     <span className="text-[10px] text-emerald-400/80">{livePaidOrders} Paid Orders</span>
                   </div>
 
                   <div className="p-5 bg-slate-900/80 rounded-2xl border border-blue-500/30 space-y-1 bg-blue-950/10">
                     <span className="text-blue-400 uppercase text-[10px] font-bold">85% OPS Revenue</span>
-                    <p className="text-2xl font-extrabold text-blue-300">£{(liveOpsRevenue || 0).toFixed(2)}</p>
+                    <p className="text-2xl font-extrabold text-blue-300">£{liveOpsRevenue.toFixed(2)}</p>
                     <span className="text-[10px] text-blue-400/80">ActionReceipt Net Share</span>
                   </div>
 
                   <div className="p-5 bg-slate-900/80 rounded-2xl border border-amber-500/30 space-y-1 bg-amber-950/10">
                     <span className="text-amber-400 uppercase text-[10px] font-bold">15% Seller Rewards</span>
-                    <p className="text-2xl font-extrabold text-amber-300">£{(liveSellerRewards || 0).toFixed(2)}</p>
+                    <p className="text-2xl font-extrabold text-amber-300">£{liveSellerRewards.toFixed(2)}</p>
                     <span className="text-[10px] text-amber-400/80">Accrued Seller Incentive</span>
                   </div>
 
@@ -296,7 +307,7 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 text-slate-300">
                         {PRICING_TIERS_CONFIG.map((tier) => {
-                          const tierTxList = transactions.filter(t => {
+                          const tierTxList = liveProductionTransactions.filter(t => {
                             const p = calculatePricing(t.itemPrice, t.currency);
                             return p.pricingTier === tier.tier;
                           });
@@ -340,7 +351,7 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                         </p>
                       </div>
                       <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-mono border border-emerald-500/20">
-                        {transactions.length} TOTAL TRANSACTIONS
+                        {liveProductionTransactions.length} TOTAL TRANSACTIONS
                       </span>
                     </div>
 
@@ -348,10 +359,10 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie
-                            data={transactions.length > 0 ? [
-                              { name: 'Settled / Order Placed', value: transactions.filter(t => t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_CONFIRMED' || t.state === 'ACCEPTED').length, color: '#10b981' },
-                              { name: 'Active (In Verification)', value: transactions.filter(t => t.state !== 'PAYMENT_CONFIRMED' && t.state !== 'ORDER_CONFIRMED' && t.state !== 'ACCEPTED' && t.state !== 'BLOCKED' && t.state !== 'PROTECTED_PAYMENT_DISABLED').length, color: '#3b82f6' },
-                              { name: 'Fraud Blocked', value: transactions.filter(t => t.state === 'BLOCKED' || t.state === 'PROTECTED_PAYMENT_DISABLED').length, color: '#f43f5e' }
+                            data={liveProductionTransactions.length > 0 ? [
+                              { name: 'Settled / Order Placed', value: liveProductionTransactions.filter(t => t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_CONFIRMED' || t.state === 'ACCEPTED').length, color: '#10b981' },
+                              { name: 'Active (In Verification)', value: liveProductionTransactions.filter(t => t.state !== 'PAYMENT_CONFIRMED' && t.state !== 'ORDER_CONFIRMED' && t.state !== 'ACCEPTED' && t.state !== 'BLOCKED' && t.state !== 'PROTECTED_PAYMENT_DISABLED').length, color: '#3b82f6' },
+                              { name: 'Fraud Blocked', value: liveProductionTransactions.filter(t => t.state === 'BLOCKED' || t.state === 'PROTECTED_PAYMENT_DISABLED').length, color: '#f43f5e' }
                             ] : [
                               { name: 'No Transactions Yet', value: 1, color: '#334155' }
                             ]}
@@ -362,7 +373,7 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                             paddingAngle={5}
                             dataKey="value"
                           >
-                            {transactions.length > 0 ? (
+                            {liveProductionTransactions.length > 0 ? (
                               <>
                                 <Cell fill="#10b981" />
                                 <Cell fill="#3b82f6" />
@@ -383,15 +394,15 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                     <div className="grid grid-cols-3 gap-2 text-[11px] pt-2 border-t border-slate-800 font-mono">
                       <div className="flex items-center space-x-2">
                         <div className="w-3 h-3 rounded-full bg-emerald-500" />
-                        <span className="text-slate-300">Settled ({transactions.filter(t => t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_CONFIRMED' || t.state === 'ACCEPTED').length})</span>
+                        <span className="text-slate-300">Settled ({liveProductionTransactions.filter(t => t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_CONFIRMED' || t.state === 'ACCEPTED').length})</span>
                       </div>
                       <div className="flex items-center space-x-2">
                         <div className="w-3 h-3 rounded-full bg-blue-500" />
-                        <span className="text-slate-300">Active ({transactions.filter(t => t.state !== 'PAYMENT_CONFIRMED' && t.state !== 'ORDER_CONFIRMED' && t.state !== 'ACCEPTED' && t.state !== 'BLOCKED' && t.state !== 'PROTECTED_PAYMENT_DISABLED').length})</span>
+                        <span className="text-slate-300">Active ({liveProductionTransactions.filter(t => t.state !== 'PAYMENT_CONFIRMED' && t.state !== 'ORDER_CONFIRMED' && t.state !== 'ACCEPTED' && t.state !== 'BLOCKED' && t.state !== 'PROTECTED_PAYMENT_DISABLED').length})</span>
                       </div>
                       <div className="flex items-center space-x-2">
                         <div className="w-3 h-3 rounded-full bg-rose-500" />
-                        <span className="text-slate-300">Blocked ({transactions.filter(t => t.state === 'BLOCKED' || t.state === 'PROTECTED_PAYMENT_DISABLED').length})</span>
+                        <span className="text-slate-300">Blocked ({liveProductionTransactions.filter(t => t.state === 'BLOCKED' || t.state === 'PROTECTED_PAYMENT_DISABLED').length})</span>
                       </div>
                     </div>
                   </div>
@@ -403,7 +414,7 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                         Active vs. Settled Ratio (Real-Time Service Layer)
                       </h3>
                       <span className="text-xs text-emerald-400 font-bold">
-                        {((transactions.filter(t => t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_CONFIRMED' || t.state === 'ACCEPTED').length / Math.max(transactions.length, 1)) * 100).toFixed(0)}% SETTLED
+                        {((liveProductionTransactions.filter(t => t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_CONFIRMED' || t.state === 'ACCEPTED').length / Math.max(liveProductionTransactions.length, 1)) * 100).toFixed(0)}% SETTLED
                       </span>
                     </div>
                     <div className="h-64 w-full">
@@ -412,9 +423,9 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                           data={[
                             {
                               category: 'Transactions',
-                              Active: transactions.filter(t => t.state !== 'PAYMENT_CONFIRMED' && t.state !== 'ORDER_CONFIRMED' && t.state !== 'ACCEPTED' && t.state !== 'BLOCKED' && t.state !== 'PROTECTED_PAYMENT_DISABLED').length,
-                              Settled: transactions.filter(t => t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_CONFIRMED' || t.state === 'ACCEPTED').length,
-                              Blocked: transactions.filter(t => t.state === 'BLOCKED' || t.state === 'PROTECTED_PAYMENT_DISABLED').length
+                              Active: liveProductionTransactions.filter(t => t.state !== 'PAYMENT_CONFIRMED' && t.state !== 'ORDER_CONFIRMED' && t.state !== 'ACCEPTED' && t.state !== 'BLOCKED' && t.state !== 'PROTECTED_PAYMENT_DISABLED').length,
+                              Settled: liveProductionTransactions.filter(t => t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_CONFIRMED' || t.state === 'ACCEPTED').length,
+                              Blocked: liveProductionTransactions.filter(t => t.state === 'BLOCKED' || t.state === 'PROTECTED_PAYMENT_DISABLED').length
                             }
                           ]}
                           margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
@@ -439,7 +450,7 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                 </div>
 
                 {/* GLOBAL MAP VISUALIZATION */}
-                <GlobalRiskMap transactions={transactions} />
+                <GlobalRiskMap transactions={liveProductionTransactions} />
 
               </div>
             )}
@@ -506,14 +517,14 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 text-slate-300">
-                        {transactions.length === 0 ? (
+                        {liveProductionTransactions.length === 0 ? (
                           <tr>
                             <td colSpan={7} className="py-8 text-center text-slate-500 font-sans">
                               No live seller reward transactions recorded yet. System is ready for live protected sales.
                             </td>
                           </tr>
                         ) : (
-                          transactions.map((t) => {
+                          liveProductionTransactions.map((t) => {
                           const p = calculatePricing(t.itemPrice, t.currency);
                           return (
                             <tr key={t.id} className="hover:bg-slate-900/40">
@@ -551,69 +562,228 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({
             {/* SUB TAB: TRANSACTIONS */}
             {subTab === 'TRANSACTIONS' && (
               <div className="space-y-4">
-                {transactions.length === 0 ? (
+                {/* Search, Filter & CSV Export Controls Bar */}
+                <div className="p-4 bg-slate-900/80 rounded-2xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex flex-1 items-center space-x-2">
+                    <input
+                      type="text"
+                      placeholder="Search ID, seller, or item..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 w-full sm:w-64"
+                    />
+                    <select
+                      value={statusFilter}
+                      onChange={(e) => setStatusFilter(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-emerald-500/50 cursor-pointer"
+                    >
+                      <option value="ALL">All Statuses</option>
+                      <option value="VERIFIED">Verified / Ready</option>
+                      <option value="CONFIRMED">Order Placed</option>
+                      <option value="PENDING">Pending Check</option>
+                      <option value="LOCKED">Locked / Blocked</option>
+                    </select>
+
+                    <div className="flex items-center space-x-1 bg-slate-950 p-1 rounded-xl border border-slate-800 ml-2">
+                      <button
+                        onClick={() => setShowDemoInExplorer(false)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition ${!showDemoInExplorer ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Live Prod (0)
+                      </button>
+                      <button
+                        onClick={() => setShowDemoInExplorer(true)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition ${showDemoInExplorer ? 'bg-blue-500 text-white' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Sandbox ({transactions.length})
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      const activeList = showDemoInExplorer ? transactions : liveProductionTransactions;
+                      const filtered = activeList.filter(t => {
+                        const matchesSearch = (t.id || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          (t.itemTitle || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          (t.seller?.fullName || '').toLowerCase().includes(searchQuery.toLowerCase());
+                        const matchesStatus = statusFilter === 'ALL' ||
+                          (statusFilter === 'VERIFIED' && (t.state === 'PURCHASE_VERIFIED' || t.state === 'READY_FOR_FUNDING')) ||
+                          (statusFilter === 'CONFIRMED' && (t.state === 'PAYMENT_CONFIRMED' || t.state === 'ORDER_PLACED')) ||
+                          (statusFilter === 'PENDING' && (t.state === 'SELLER_INVITED' || t.state === 'CREATED')) ||
+                          (statusFilter === 'LOCKED' && (t.state === 'BLOCKED' || t.state === 'PAYMENT_LOCKED'));
+                        return matchesSearch && matchesStatus;
+                      });
+
+                      if (!filtered.length) return;
+                      const headers = ['Transaction ID', 'Item', 'Price', 'Currency', 'State', 'Seller', 'Date'];
+                      const csvRows = [
+                        headers.join(','),
+                        ...filtered.map(t => [
+                          t.id,
+                          `"${(t.itemTitle || '').replace(/"/g, '""')}"`,
+                          t.itemPrice || 0,
+                          t.currency || 'GBP',
+                          t.state || 'UNKNOWN',
+                          `"${(t.seller?.fullName || '').replace(/"/g, '""')}"`,
+                          t.createdAt ? new Date(t.createdAt).toISOString() : ''
+                        ].join(','))
+                      ].join('\n');
+
+                      const blob = new Blob([csvRows], { type: 'text/csv' });
+                      const url = window.URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `ActionReceipt_Transactions_${new Date().toISOString().split('T')[0]}.csv`;
+                      a.click();
+                      window.URL.revokeObjectURL(url);
+                    }}
+                    disabled={!(showDemoInExplorer ? transactions : liveProductionTransactions).length}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold cursor-pointer transition flex items-center space-x-1.5 shrink-0 disabled:opacity-40"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export to CSV</span>
+                  </button>
+                </div>
+
+                {(showDemoInExplorer ? transactions : liveProductionTransactions).length === 0 ? (
                   <div className="p-8 bg-slate-900/60 rounded-2xl border border-slate-800 text-center space-y-3 font-mono">
                     <ShieldCheck className="w-10 h-10 text-emerald-400/50 mx-auto" />
                     <h3 className="text-sm font-bold text-white uppercase">No Live Production Transactions Recorded Yet</h3>
                     <p className="text-slate-400 text-xs font-sans max-w-md mx-auto">
-                      Live production telemetry is strictly 0 until transactions are submitted. Create a sale via the Store Catalog or REST API to trigger real-time verification.
+                      Live production telemetry is strictly 0 until live transactions are submitted. Switch to <strong>Sandbox (2)</strong> above to inspect sample verification logs or initiate a sale.
                     </p>
+                    <button
+                      onClick={() => setShowDemoInExplorer(true)}
+                      className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition inline-block cursor-pointer"
+                    >
+                      Inspect Sandbox Transactions ({transactions.length})
+                    </button>
                   </div>
                 ) : (
-                  transactions.map((tx) => (
-                    <div key={tx.id} className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between text-xs">
-                        <div>
-                          <div className="flex items-center space-x-2">
-                            <span className="font-bold text-white text-sm">{tx.itemTitle || (tx as any).title}</span>
-                            <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">
-                              {tx.sellerIntegrationStatus === 'INTEGRATED' ? 'INTEGRATED SELLER ✓' : 'BUYER-INITIATED'}
-                            </span>
+                  (showDemoInExplorer ? transactions : liveProductionTransactions)
+                    .filter(tx => {
+                      const matchesSearch = (tx.id || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        (tx.itemTitle || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        (tx.seller?.fullName || '').toLowerCase().includes(searchQuery.toLowerCase());
+                      const matchesStatus = statusFilter === 'ALL' ||
+                        (statusFilter === 'VERIFIED' && (tx.state === 'PURCHASE_VERIFIED' || tx.state === 'READY_FOR_FUNDING')) ||
+                        (statusFilter === 'CONFIRMED' && (tx.state === 'PAYMENT_CONFIRMED' || tx.state === 'ORDER_PLACED')) ||
+                        (statusFilter === 'PENDING' && (tx.state === 'SELLER_INVITED' || tx.state === 'CREATED')) ||
+                        (statusFilter === 'LOCKED' && (tx.state === 'BLOCKED' || tx.state === 'PAYMENT_LOCKED'));
+                      return matchesSearch && matchesStatus;
+                    })
+                    .map((tx) => {
+                      const isExpanded = expandedTxId === tx.id;
+                      return (
+                        <div 
+                          key={tx.id} 
+                          className="p-5 bg-slate-900/80 hover:bg-slate-900 rounded-2xl border border-slate-800 space-y-3 cursor-pointer transition"
+                          onClick={() => setExpandedTxId(isExpanded ? null : tx.id)}
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <div>
+                              <div className="flex items-center space-x-2">
+                                <span className="font-bold text-white text-sm">{tx.itemTitle || (tx as any).title}</span>
+                                <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">
+                                  {tx.sellerIntegrationStatus === 'INTEGRATED' ? 'INTEGRATED SELLER ✓' : 'BUYER-INITIATED'}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400 font-sans mt-0.5">{tx.description}</p>
+                            </div>
+
+                            <div className="text-right">
+                              <span className="text-lg font-bold text-emerald-400">£{(tx.itemPrice || 0).toFixed(2)}</span>
+                              <div className="mt-1">
+                                {tx.state === 'PURCHASE_VERIFIED' || tx.state === 'READY_FOR_FUNDING' ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Verified</span>
+                                ) : tx.state === 'PAYMENT_CONFIRMED' || tx.state === 'ORDER_PLACED' ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-500/10 text-teal-300 border border-teal-500/20">Order Placed</span>
+                                ) : tx.state === 'BLOCKED' || tx.state === 'PAYMENT_LOCKED' ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">Locked</span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pending</span>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                          <p className="text-[11px] text-slate-400 font-sans mt-0.5">{tx.description}</p>
-                        </div>
 
-                        <div className="text-right">
-                          <span className="text-lg font-bold text-emerald-400">£{(tx.itemPrice || 0).toFixed(2)}</span>
-                          <span className="text-[10px] block text-slate-500">STATE: {tx.state}</span>
-                        </div>
-                      </div>
+                          <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-[11px] space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-slate-400 font-bold flex items-center space-x-1.5">
+                                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                                <span>01-07 REAL-TIME SAFETY CHECKPOINTS:</span>
+                              </span>
+                              <span className="text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 text-[10px]">
+                                {tx.state === 'PAYMENT_CONFIRMED' || tx.state === 'ACCEPTED' ? 'STAGE 07/07 PASSED ✓' : tx.state === 'READY_FOR_FUNDING' ? 'STAGE 06/07 PASSED ✓' : tx.state === 'BLOCKED' ? 'STAGE 06/07 CONTRADICTION BLOCKED ✕' : tx.seller?.identityConfirmed ? 'STAGE 04/07 VERIFIED ✓' : 'STAGE 03/07 INVITATION DELIVERED'}
+                              </span>
+                            </div>
 
-                      <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-[11px] space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-400 font-bold flex items-center space-x-1.5">
-                            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                            <span>01-07 REAL-TIME SAFETY CHECKPOINTS:</span>
-                          </span>
-                          <span className="text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 text-[10px]">
-                            {tx.state === 'PAYMENT_CONFIRMED' || tx.state === 'ACCEPTED' ? 'STAGE 07/07 PASSED ✓' : tx.state === 'READY_FOR_FUNDING' ? 'STAGE 06/07 PASSED ✓' : tx.state === 'BLOCKED' ? 'STAGE 06/07 CONTRADICTION BLOCKED ✕' : tx.seller.identityConfirmed ? 'STAGE 04/07 VERIFIED ✓' : 'STAGE 03/07 INVITATION DELIVERED'}
-                          </span>
-                        </div>
+                            <div className="grid grid-cols-7 gap-1 text-[9px] text-center font-bold">
+                              <div className="p-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">01 Risk</div>
+                              <div className="p-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">02 Start</div>
+                              <div className={`p-1 rounded border ${tx.seller?.identityConfirmed || tx.state !== 'CREATED' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>03 Invite</div>
+                              <div className={`p-1 rounded border ${tx.seller?.identityConfirmed ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>04 Identity</div>
+                              <div className={`p-1 rounded border ${tx.liveCheck?.status === 'PASS' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>05 LiveCheck</div>
+                              <div className={`p-1 rounded border ${tx.state === 'READY_FOR_FUNDING' || tx.state === 'PAYMENT_CONFIRMED' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : tx.state === 'BLOCKED' ? 'bg-red-500/20 text-red-400 border-red-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>06 Fraud</div>
+                              <div className={`p-1 rounded border ${tx.state === 'PAYMENT_CONFIRMED' || tx.state === 'ACCEPTED' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>07 Payment</div>
+                            </div>
+                          </div>
 
-                        <div className="grid grid-cols-7 gap-1 text-[9px] text-center font-bold">
-                          <div className="p-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">01 Risk</div>
-                          <div className="p-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">02 Start</div>
-                          <div className={`p-1 rounded border ${tx.seller.identityConfirmed || tx.state !== 'CREATED' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>03 Invite</div>
-                          <div className={`p-1 rounded border ${tx.seller.identityConfirmed ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>04 Identity</div>
-                          <div className={`p-1 rounded border ${tx.liveCheck?.status === 'PASS' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>05 LiveCheck</div>
-                          <div className={`p-1 rounded border ${tx.state === 'READY_FOR_FUNDING' || tx.state === 'PAYMENT_CONFIRMED' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : tx.state === 'BLOCKED' ? 'bg-red-500/20 text-red-400 border-red-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>06 Fraud</div>
-                          <div className={`p-1 rounded border ${tx.state === 'PAYMENT_CONFIRMED' || tx.state === 'ACCEPTED' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-slate-900 text-slate-500 border-slate-800'}`}>07 Payment</div>
-                        </div>
-                      </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-[11px] items-center">
+                            <div><span className="text-slate-500">Seller:</span> <span className="text-slate-200">{tx.seller?.fullName}</span></div>
+                            <div>
+                              <LocationProof compact country={tx.locationProof?.country || 'United Kingdom'} city={tx.locationProof?.city || 'London'} status="VERIFIED" />
+                            </div>
+                            <div className="sm:text-right">
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/pay/${tx.id}`);
+                                }} 
+                                className="text-emerald-400 hover:underline font-bold cursor-pointer"
+                              >
+                                Open Checkout →
+                              </button>
+                            </div>
+                          </div>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-[11px] items-center">
-                        <div><span className="text-slate-500">Seller:</span> <span className="text-slate-200">{tx.seller.fullName}</span></div>
-                        <div>
-                          <LocationProof compact country={tx.locationProof?.country || 'United Kingdom'} city={tx.locationProof?.city || 'Manchester'} status="VERIFIED" />
+                          {/* Expanded Details Row */}
+                          {isExpanded && (
+                            <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-3 text-xs bg-slate-950 p-4 rounded-xl">
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <div>
+                                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Transaction ID</span>
+                                  <span className="font-mono text-white font-bold">{tx.id}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Payout Beneficiary</span>
+                                  <span className="text-slate-200 font-mono">{tx.payout?.beneficiaryName || 'Sarah Jenkins'} ({tx.payout?.bankName || 'Barclays'})</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Protection Fee</span>
+                                  <span className="text-emerald-400 font-mono font-bold">£{(tx.financials?.platformFee || 4.50).toFixed(2)}</span>
+                                </div>
+                              </div>
+
+                              {tx.agentLogs && tx.agentLogs.length > 0 && (
+                                <div className="space-y-1">
+                                  <span className="text-slate-400 font-mono text-[10px] uppercase block">TruthChain Log Entries</span>
+                                  <div className="space-y-1 max-h-28 overflow-y-auto font-mono text-[10px] text-slate-400 bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                                    {tx.agentLogs.map((log, idx) => (
+                                      <div key={idx} className="flex justify-between">
+                                        <span>[{log.agentName}] {log.message}</span>
+                                        <span className="text-slate-600">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
-                        <div className="sm:text-right">
-                          <button onClick={() => navigate(`/pay/${tx.id}`)} className="text-emerald-400 hover:underline font-bold cursor-pointer">
-                            Open Checkout →
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))
+                      );
+                    })
                 )}
               </div>
             )}

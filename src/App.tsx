@@ -78,7 +78,7 @@ export function App() {
 
     // Dynamic Checkout Route: /pay/:txId
     if (currentRoute.startsWith('/pay/')) {
-      const txId = currentRoute.replace('/pay/', '');
+      const txId = currentRoute.replace('/pay/', '').trim() || 'AR-DEMO-001';
       return <CheckoutPage transactionId={txId} navigate={navigate} />;
     }
 
