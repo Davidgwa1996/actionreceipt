@@ -527,22 +527,153 @@ async function startServer() {
   if (!fs.existsSync(publicDirPath)) {
     fs.mkdirSync(publicDirPath, { recursive: true });
   }
+
+  // Intercept all media (.mp4, .webm) and download routes BEFORE any static or Vite middlewares
+  const handleMediaOrDownloadRequest = (req: express.Request, res: express.Response) => {
+    try {
+      let filename = '';
+      let isAttachment = false;
+
+      if (req.path === '/download' || req.path === '/api/download-demo-video') {
+        const format = req.query.format === 'webm' ? 'webm' : 'mp4';
+        filename = `ActionReceipt_3Min_Demo_Video_1080p.${format}`;
+        isAttachment = true;
+      } else {
+        filename = path.basename(req.path);
+        isAttachment = req.query.download === 'true';
+      }
+
+      const filePath = path.join(publicDirPath, filename);
+
+      if (!fs.existsSync(filePath)) {
+        console.warn(`[MEDIA ROUTE WARN] File not found: ${filePath}`);
+        return res.status(404).json({
+          available: false,
+          error: `Video asset '${filename}' was not found on the server.`
+        });
+      }
+
+      const ext = path.extname(filePath).toLowerCase();
+      const mimeType = ext === '.webm' ? 'video/webm' : (ext === '.mp4' ? 'video/mp4' : 'application/octet-stream');
+      const stat = fs.statSync(filePath);
+      const fileSize = stat.size;
+
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Disposition');
+      res.setHeader('Accept-Ranges', 'bytes');
+
+      const range = req.headers.range;
+
+      if (range && !isAttachment) {
+        // Handle Range requests for video streaming
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        
+        // CRITICAL FIX: Cap chunks to 10MB to prevent Cloud Run 32MB limit HTTP 500 crashes
+        const MAX_CHUNK_SIZE = 10 * 1024 * 1024; 
+        const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + MAX_CHUNK_SIZE, fileSize - 1);
+
+        if (start >= fileSize || end >= fileSize) {
+          res.status(416).setHeader('Content-Range', `bytes */${fileSize}`);
+          return res.end();
+        }
+
+        const chunksize = (end - start) + 1;
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+        res.setHeader('Content-Length', chunksize.toString());
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+
+        const stream = fs.createReadStream(filePath, { start, end });
+        stream.on('error', (err: any) => {
+           if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
+             console.error('[STREAM ERROR]', err);
+           }
+           if (!res.headersSent) res.status(500).end();
+        });
+        stream.pipe(res);
+        return;
+      } else {
+        // Full file download (Attachment or full load without Range)
+        // CRITICAL FIX: We DELIBERATELY omit Content-Length to force Transfer-Encoding: chunked.
+        // This completely bypasses Cloud Run's 32MB synchronous response limit.
+        res.status(200);
+        res.setHeader('Content-Type', isAttachment ? 'application/octet-stream' : mimeType);
+        res.setHeader('Content-Disposition', isAttachment ? `attachment; filename="${filename}"` : `inline; filename="${filename}"`);
+
+        const stream = fs.createReadStream(filePath);
+        stream.on('error', (err: any) => {
+           if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
+             console.error('[DOWNLOAD STREAM ERROR]', err);
+           }
+           if (!res.headersSent) res.status(500).end();
+        });
+        stream.pipe(res);
+        return;
+      }
+    } catch (err: any) {
+      console.error('[MEDIA ROUTE EXCEPTION]:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error during media request', details: err.message });
+      }
+    }
+  };
+
+  // Dedicated routes for downloads
+  app.get('/download', handleMediaOrDownloadRequest);
+  app.get('/api/download-demo-video', handleMediaOrDownloadRequest);
+
+  // Intercept any direct .mp4 or .webm requests to serve directly via Express (preventing Vite 500 errors)
+  app.use((req, res, next) => {
+    const urlPath = req.path.toLowerCase();
+    if (urlPath.endsWith('.mp4') || urlPath.endsWith('.webm')) {
+      return handleMediaOrDownloadRequest(req, res);
+    }
+    next();
+  });
+
   app.use(express.static(publicDirPath));
 
-  // Direct High-Definition 1080p Demo Video Downloader
-  app.get('/api/download-demo-video', (req, res) => {
-    const format = req.query.format === 'webm' ? 'webm' : 'mp4';
-    const filename = `ActionReceipt_3Min_Demo_Video_1080p.${format}`;
-    const filePath = path.join(process.cwd(), 'public', filename);
+  // Download Health Check Endpoint
+  app.get('/api/download-health', (req, res) => {
+    try {
+      const format = req.query.format === 'webm' ? 'webm' : 'mp4';
+      const filename = `ActionReceipt_3Min_Demo_Video_1080p.${format}`;
+      const filePath = path.join(publicDirPath, filename);
 
-    if (fs.existsSync(filePath)) {
-      res.download(filePath, filename, (err) => {
-        if (err && !res.headersSent) {
-          res.status(500).json({ error: 'Error serving video file download.' });
-        }
+      if (!fs.existsSync(filePath)) {
+        return res.json({
+          available: false,
+          message: `Video asset (${filename}) is currently being prepared. Please try again shortly.`,
+          filename
+        });
+      }
+
+      const stat = fs.statSync(filePath);
+      if (stat.size < 1000) {
+        return res.json({
+          available: false,
+          message: `Video asset (${filename}) is incomplete. Please wait for build completion.`,
+          filename
+        });
+      }
+
+      return res.json({
+        available: true,
+        filename,
+        size: stat.size,
+        formattedSize: `${(stat.size / (1024 * 1024)).toFixed(1)} MB`,
+        contentType: 'application/octet-stream'
       });
-    } else {
-      res.status(404).json({ error: 'Video file is compiling, please retry in a few seconds.' });
+    } catch (err: any) {
+      console.error('[DOWNLOAD HEALTH CHECK ERROR]:', err);
+      return res.status(500).json({
+        available: false,
+        message: 'Unable to check video asset availability.',
+        error: err.message
+      });
     }
   });
 

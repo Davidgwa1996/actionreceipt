@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Play, Pause, RotateCcw, Volume2, VolumeX, Maximize2, Sparkles, 
-  ShieldCheck, MousePointer, Volume1, Film, Download, CheckCircle2
+  ShieldCheck, MousePointer, Volume1, Film, Download, CheckCircle2, Bookmark, RefreshCw,
+  Copy, Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -112,6 +113,36 @@ export const SAFETY_PURCHASE_SCENES: VideoScene[] = [
   }
 ];
 
+export const CHAPTER_MARKERS = [
+  {
+    id: 'setup',
+    title: 'Initial Setup',
+    subtitle: 'Deals & Item Inspection',
+    time: 0,
+    percentage: 0,
+    color: 'emerald',
+    scenes: 'Stage 1 & 2'
+  },
+  {
+    id: 'verification',
+    title: 'Verification',
+    subtitle: 'Gemini AI & LocationProof',
+    time: 60,
+    percentage: 33.33,
+    color: 'blue',
+    scenes: 'Stage 3 & 4'
+  },
+  {
+    id: 'payout',
+    title: 'Payout',
+    subtitle: 'Escrow & 3-Way Split',
+    time: 120,
+    percentage: 66.66,
+    color: 'amber',
+    scenes: 'Stage 5 & 6'
+  }
+];
+
 // Audio FX helper using Web Audio API
 const playAudioFx = (type: 'click' | 'chime') => {
   try {
@@ -160,9 +191,16 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [downloadToast, setDownloadToast] = useState<string | null>(null);
-  const [useNativeVideo, setUseNativeVideo] = useState<boolean>(true);
   const [savedResumeTime, setSavedResumeTime] = useState<number | null>(null);
+  const [copiedPromptId, setCopiedPromptId] = useState<number | null>(null);
 
+  const handleCopyPrompt = (sceneId: number, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedPromptId(sceneId);
+    setTimeout(() => setCopiedPromptId(null), 3000);
+  };
+
+  const isSpeechPausedRef = useRef<boolean>(false);
   const playerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const animationFrameRef = useRef<number | null>(null);
@@ -213,72 +251,100 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
     });
   }, []);
 
-  // Direct High-Definition 1080p Demo Video Downloader with Progress Indicator and Buffer State Validation
-  const handleDownloadDemoVideo = () => {
+  // Exponential Backoff Retry Fetcher
+  const fetchWithExponentialBackoff = async (
+    url: string,
+    maxRetries: number = 3,
+    initialDelayMs: number = 1000,
+    onStatusUpdate?: (statusMsg: string) => void
+  ): Promise<Response> => {
+    let delay = initialDelayMs;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 1 && onStatusUpdate) {
+          onStatusUpdate(`Server reconnecting... Retrying download (Attempt ${attempt}/${maxRetries})`);
+        }
+        const response = await fetch(url);
+        if (response.ok) {
+          return response;
+        }
+        if (response.status === 404) {
+          throw new Error(`File not found on server (404)`);
+        }
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      } catch (err: any) {
+        console.warn(`[DOWNLOAD ATTEMPT ${attempt} FAILED]:`, err.message);
+        if (attempt === maxRetries) {
+          throw err;
+        }
+        if (onStatusUpdate) {
+          onStatusUpdate(`Network delay detected. Retrying in ${(delay / 1000).toFixed(1)}s (Attempt ${attempt}/${maxRetries})...`);
+        }
+        await new Promise(res => setTimeout(res, delay));
+        delay *= 2; // Exponential backoff: 1s, 2s, 4s
+      }
+    }
+    throw new Error('Max download retries reached');
+  };
+
+  // Direct High-Definition 1080p Demo Video Downloader
+  const handleDownloadDemoVideo = async (e?: React.MouseEvent) => {
+    if (e) e.preventDefault();
     if (isDownloading) return;
 
     setIsDownloading(true);
-    setDownloadProgress(0);
-    setDownloadToast(`Connecting & buffering high-bitrate 1080p video (${downloadFormat.toUpperCase()})...`);
+    setDownloadProgress(20);
+    const filename = `ActionReceipt_3Min_Demo_Video_1080p.${downloadFormat}`;
+    setDownloadToast(`Checking HD Video asset status (${filename})...`);
 
-    const xhr = new XMLHttpRequest();
-    const downloadUrl = `/api/download-demo-video?format=${downloadFormat}`;
+    try {
+      // 1. Verify health and file size on server
+      const healthRes = await fetch(`/api/download-health?format=${downloadFormat}`);
+      const healthData = await healthRes.json();
 
-    xhr.open('GET', downloadUrl, true);
-    xhr.responseType = 'blob';
-
-    xhr.onprogress = (e) => {
-      if (e.lengthComputable && e.total > 0) {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        setDownloadProgress(percent);
-        setDownloadToast(`Verifying & Downloading 1080p Video Buffer: ${percent}% complete...`);
-      } else {
-        setDownloadProgress(50);
-        setDownloadToast(`Verifying video buffer stream...`);
-      }
-    };
-
-    xhr.onload = () => {
-      // Validate that the returned blob is valid, complete, and not corrupt (size > 100KB)
-      if (xhr.status === 200 && xhr.response && xhr.response.size > 100000) {
-        setDownloadProgress(100);
-        const megabytes = (xhr.response.size / (1024 * 1024)).toFixed(2);
-        setDownloadToast(`✓ Video verified (${megabytes} MB, high bitrate). Saving file...`);
-
-        const blob = new Blob([xhr.response], { type: downloadFormat === 'webm' ? 'video/webm' : 'video/mp4' });
-        const blobUrl = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = blobUrl;
-        link.setAttribute('download', `ActionReceipt_3Min_Demo_Video_1080p.${downloadFormat}`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(blobUrl);
-
-        setTimeout(() => {
-          setIsDownloading(false);
-          setDownloadProgress(0);
-          setDownloadToast(`✓ ActionReceipt_3Min_Demo_Video_1080p.${downloadFormat} (${megabytes} MB) downloaded successfully!`);
-          setTimeout(() => setDownloadToast(null), 5000);
-        }, 1200);
-      } else {
+      if (!healthData.available) {
         setIsDownloading(false);
         setDownloadProgress(0);
-        setDownloadToast(`⚠️ Download state validation failed. Retrying direct link...`);
-        window.open(downloadUrl, '_blank');
+        setDownloadToast(`⚠️ Asset notice: ${healthData.message || 'Video file not ready'}`);
         setTimeout(() => setDownloadToast(null), 5000);
+        return;
       }
-    };
 
-    xhr.onerror = () => {
-      setIsDownloading(false);
-      setDownloadProgress(0);
-      setDownloadToast(`⚠️ Download connection interrupted. Retrying direct link...`);
-      window.open(downloadUrl, '_blank');
-      setTimeout(() => setDownloadToast(null), 5000);
-    };
+      const formattedSize = healthData.formattedSize || '38 MB';
+      setDownloadProgress(60);
+      setDownloadToast(`Initiating direct browser stream for ${filename} (${formattedSize})...`);
 
-    xhr.send();
+      // 2. Direct browser download trigger via native attachment link
+      const downloadUrl = `/download?format=${downloadFormat}`;
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      setDownloadProgress(100);
+      setDownloadToast(`✓ Direct download started for ${filename} (${formattedSize})!`);
+
+      setTimeout(() => {
+        setIsDownloading(false);
+        setDownloadProgress(0);
+        setTimeout(() => setDownloadToast(null), 5000);
+      }, 1500);
+
+    } catch (err: any) {
+      console.error('[DOWNLOAD TRIGGER NOTICE]:', err);
+      // Resilient native browser fallback
+      const downloadUrl = `/download?format=${downloadFormat}`;
+      window.location.href = downloadUrl;
+      setDownloadProgress(100);
+      setDownloadToast(`✓ Download stream initiated!`);
+      setTimeout(() => {
+        setIsDownloading(false);
+        setDownloadProgress(0);
+        setTimeout(() => setDownloadToast(null), 5000);
+      }, 1500);
+    }
   };
 
   const stageCardRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -294,29 +360,25 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
     }
   }, [currentScene?.id]);
 
-  // Sync video element playback speed and mute state
+  // Sync video element playback speed (always 1.0) and mute state
   useEffect(() => {
     if (videoRef.current) {
-      videoRef.current.playbackRate = playbackRate;
+      videoRef.current.playbackRate = 1.0;
       videoRef.current.muted = isMuted || !voiceoverEnabled;
     }
-  }, [playbackRate, isMuted, voiceoverEnabled]);
+  }, [isMuted, voiceoverEnabled]);
 
-  // Handle Video Time Update from Native Video element
-  const handleVideoTimeUpdate = () => {
-    if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
+  const handleVideoEnded = () => {
+    // Only mark video as ended if currentTime is near the actual end (180s)
+    if (currentTime >= TOTAL_DURATION - 2) {
+      setIsPlaying(false);
+      setCurrentTime(TOTAL_DURATION);
     }
   };
 
-  const handleVideoEnded = () => {
-    setIsPlaying(false);
-    setCurrentTime(TOTAL_DURATION);
-  };
-
-  // Continuous fallback timer if native video is not playing
+  // Smooth continuous video timer loop (1.0 playback rate)
   useEffect(() => {
-    if (!isPlaying || useNativeVideo) {
+    if (!isPlaying) {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       return;
     }
@@ -324,7 +386,7 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
     lastTimeRef.current = performance.now();
 
     const updateTimer = (now: number) => {
-      const delta = ((now - lastTimeRef.current) / 1000) * playbackRate;
+      const delta = (now - lastTimeRef.current) / 1000;
       lastTimeRef.current = now;
 
       setCurrentTime(prev => {
@@ -344,7 +406,7 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, playbackRate, useNativeVideo]);
+  }, [isPlaying]);
 
   // Trigger simulated pointer click at designated click offset
   useEffect(() => {
@@ -378,33 +440,36 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
   };
 
   const togglePlay = () => {
-    if (videoRef.current) {
-      if (videoRef.current.paused) {
-        if (videoRef.current.currentTime >= TOTAL_DURATION) {
-          videoRef.current.currentTime = 0;
-          setCurrentTime(0);
-        }
-        videoRef.current.play().then(() => {
-          setIsPlaying(true);
-        }).catch(() => {
-          setIsPlaying(false);
-        });
-      } else {
-        videoRef.current.pause();
-        setIsPlaying(false);
-      }
-      return;
-    }
+    const nextPlayingState = !isPlaying;
 
     if (currentTime >= TOTAL_DURATION) {
       setCurrentTime(0);
       clickTriggeredRef.current = {};
+      if (videoRef.current) {
+        videoRef.current.currentTime = 0;
+      }
     }
-    setIsPlaying(prev => !prev);
+
+    setIsPlaying(nextPlayingState);
+
+    if (videoRef.current) {
+      if (nextPlayingState) {
+        videoRef.current.play().catch((err) => {
+          console.warn('Native video autoplay handled by ticker:', err);
+        });
+      } else {
+        videoRef.current.pause();
+      }
+    }
   };
 
   const jumpToTime = (time: number) => {
     setCurrentTime(time);
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    setLastSpokenSceneId(null);
+    isSpeechPausedRef.current = false;
     if (videoRef.current) {
       videoRef.current.currentTime = time;
     }
@@ -465,6 +530,7 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
             </div>
 
             <button
+              type="button"
               onClick={handleDownloadDemoVideo}
               disabled={isDownloading}
               className={`relative overflow-hidden px-4 py-2 rounded-xl font-bold text-xs cursor-pointer transition flex items-center space-x-2 shadow-lg ${
@@ -482,7 +548,7 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
               <Download className={`w-4 h-4 z-10 ${isDownloading ? 'text-emerald-400 animate-spin' : 'text-emerald-400'}`} />
               <span className="z-10">
                 {isDownloading 
-                  ? `VERIFYING & DOWNLOADING (${downloadProgress}%)...` 
+                  ? `DOWNLOADING (${downloadProgress}%)...` 
                   : `DOWNLOAD DEMO VIDEO (.${downloadFormat.toUpperCase()})`}
               </span>
             </button>
@@ -541,16 +607,19 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
             })}
           </div>
 
-          {/* NATIVE 1080P VIDEO ELEMENT FOR PERFECT PLAY/PAUSE/RESUME ACCURACY */}
-          <video
-            ref={videoRef}
-            src="/ActionReceipt_3Min_Demo_Video_1080p.mp4"
-            onTimeUpdate={handleVideoTimeUpdate}
-            onEnded={handleVideoEnded}
-            playsInline
-            preload="auto"
-            className="absolute inset-0 w-full h-full object-contain bg-slate-950 object-center z-10"
-          />
+          {/* HIGH-DEFINITION 1080P INTERACTIVE SCENE CANVAS ENGINE */}
+          <div className="absolute inset-0 w-full h-full bg-slate-950 flex items-center justify-center overflow-hidden z-0">
+            {/* STANDARD HTML5 1080P DEMO VIDEO ELEMENT WITH EMBEDDED STEREO AUDIO */}
+            <video
+              ref={videoRef}
+              src="/ActionReceipt_3Min_Demo_Video_1080p.mp4"
+              onEnded={handleVideoEnded}
+              playsInline
+              preload="auto"
+              poster={currentScene.image}
+              className="absolute inset-0 w-full h-full object-contain bg-slate-950 object-center z-10 opacity-100"
+            />
+          </div>
 
           {/* TOP FLOATING STATUS HUD & PLAYBACK HEALTH OVERLAY */}
           <div className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between text-xs font-mono pointer-events-none">
@@ -632,8 +701,36 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
           {/* BOTTOM PLAYER CONTROLS BAR */}
           <div className="absolute bottom-0 left-0 right-0 z-30 bg-slate-950/95 border-t border-slate-800/80 px-4 py-2.5 space-y-2 font-mono text-xs">
             
+            {/* CHAPTER MARKERS QUICK OVERLAY BAR */}
+            <div className="flex items-center space-x-2 py-1 overflow-x-auto border-b border-slate-900 pb-2">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest shrink-0 flex items-center space-x-1">
+                <Bookmark className="w-3 h-3 text-emerald-400" />
+                <span>CHAPTERS:</span>
+              </span>
+              <div className="flex items-center space-x-1.5 shrink-0">
+                {CHAPTER_MARKERS.map((chapter) => {
+                  const isActive = currentTime >= chapter.time && (chapter.id === 'payout' || currentTime < chapter.time + 60);
+                  return (
+                    <button
+                      key={`chapter-btn-${chapter.id}`}
+                      onClick={() => jumpToTime(chapter.time)}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition flex items-center space-x-1.5 cursor-pointer border ${
+                        isActive
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-sm'
+                          : 'bg-slate-900/80 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+                      <span>{chapter.title}</span>
+                      <span className="text-[9px] opacity-70 font-mono">({formatTime(chapter.time)})</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* SCRUBBER & MILESTONE MARKERS */}
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 pt-1">
               <div className="flex justify-between text-[10px] text-slate-400">
                 <div className="flex items-center space-x-2">
                   <span className="font-bold text-white">{formatTime(currentTime)}</span>
@@ -656,14 +753,40 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
                   className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-400 focus:outline-none relative z-10"
                 />
 
+                {/* CHAPTER MARKER OVERLAY PINS ON SCRUBBER */}
+                <div className="absolute top-1 left-0 right-0 h-2 pointer-events-none z-20">
+                  {CHAPTER_MARKERS.map((ch) => (
+                    <div
+                      key={`scrubber-pin-${ch.id}`}
+                      style={{ left: `${ch.percentage}%` }}
+                      className="absolute top-0 bottom-0 w-0.5 bg-emerald-400/80 shadow-sm shadow-emerald-400/50 pointer-events-auto cursor-pointer group"
+                      onClick={() => jumpToTime(ch.time)}
+                      title={`Jump to Chapter: ${ch.title} (${formatTime(ch.time)})`}
+                    >
+                      <div className="w-2 h-2 rounded-full bg-emerald-400 -translate-x-1/2 -translate-y-1 opacity-80 group-hover:scale-125 transition" />
+                      <div className="opacity-0 group-hover:opacity-100 absolute bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-emerald-300 text-[9px] font-bold px-2 py-0.5 rounded border border-emerald-500/30 whitespace-nowrap shadow-xl">
+                        {ch.title} ({formatTime(ch.time)})
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
                 {/* VISUAL MILESTONE PROGRESS MARKERS */}
                 <div className="relative w-full h-4 mt-1 text-[9px] text-slate-400 flex justify-between pointer-events-none font-mono">
                   <div 
-                    onClick={() => jumpToTime(90)}
-                    className="absolute left-[50%] -translate-x-1/2 flex flex-col items-center cursor-pointer pointer-events-auto hover:text-emerald-400 transition"
+                    onClick={() => jumpToTime(0)}
+                    className="absolute left-[0%] flex flex-col items-start cursor-pointer pointer-events-auto hover:text-emerald-400 transition"
                   >
                     <div className="w-1 h-2 bg-emerald-500/60 mb-0.5 rounded-full" />
-                    <span>Purchase Verified (90s)</span>
+                    <span>01: Setup (0s)</span>
+                  </div>
+
+                  <div 
+                    onClick={() => jumpToTime(60)}
+                    className="absolute left-[33.3%] -translate-x-1/2 flex flex-col items-center cursor-pointer pointer-events-auto hover:text-emerald-400 transition"
+                  >
+                    <div className="w-1 h-2 bg-blue-400 mb-0.5 rounded-full" />
+                    <span className="text-blue-300 font-bold">02: Verification (60s)</span>
                   </div>
 
                   <div 
@@ -671,7 +794,7 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
                     className="absolute left-[66.6%] -translate-x-1/2 flex flex-col items-center cursor-pointer pointer-events-auto hover:text-emerald-400 transition"
                   >
                     <div className="w-1 h-2 bg-emerald-400 mb-0.5 rounded-full" />
-                    <span className="text-emerald-400 font-bold">Payment Verified & Instant Release (120s)</span>
+                    <span className="text-emerald-400 font-bold">03: Payout (120s)</span>
                   </div>
 
                   <div 
@@ -741,20 +864,15 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
                 </div>
 
                 <button
-                  onClick={() => {
-                    if (voiceoverEnabled) {
-                      window.speechSynthesis?.cancel();
-                    }
-                    setVoiceoverEnabled(!voiceoverEnabled);
-                  }}
+                  onClick={() => setIsMuted(!isMuted)}
                   className={`px-3 py-1 rounded-xl border text-[11px] font-mono cursor-pointer transition flex items-center space-x-1.5 ${
-                    voiceoverEnabled 
+                    !isMuted 
                       ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
                       : 'bg-slate-900 text-slate-400 border-slate-800'
                   }`}
                 >
-                  {voiceoverEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-                  <span>HUMAN VOICE NARRATION: {voiceoverEnabled ? 'ON' : 'OFF'}</span>
+                  {!isMuted ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                  <span>AUDIO VOICE: {!isMuted ? 'ACTIVE (HD AAC)' : 'MUTED'}</span>
                 </button>
 
                 <button
@@ -769,6 +887,110 @@ export const DemoVideoPage: React.FC<DemoVideoPageProps> = ({ navigate, onOpenCr
 
           </div>
 
+        </div>
+
+        {/* ACCOMPANYING SYSTEM PROMPT & VOICE NARRATION TRANSCRIPT CARD */}
+        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-5 shadow-xl text-left">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4 font-mono">
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-xs text-emerald-400 font-bold uppercase tracking-wider">
+                  SYSTEMATIC VOICE PROMPT & SCRIPT FLOW
+                </span>
+              </div>
+              <h2 className="text-lg font-bold text-white flex items-center space-x-2">
+                <span>STAGE 0{currentScene.id}: {currentScene.title}</span>
+              </h2>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => handleCopyPrompt(currentScene.id, currentScene.voiceoverText)}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 rounded-xl text-xs font-mono font-bold transition flex items-center space-x-1.5 cursor-pointer shadow"
+              >
+                {copiedPromptId === currentScene.id ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>PROMPT COPIED!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>COPY STAGE PROMPT</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* ACTIVE SCENE NARRATION PROMPT DISPLAY BOX */}
+          <div className="p-4 bg-slate-950/80 border border-emerald-500/30 rounded-2xl space-y-2 relative overflow-hidden shadow-inner">
+            <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
+              <span className="text-emerald-400 font-bold flex items-center space-x-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400 animate-spin" />
+                <span>LIVE VOICE NARRATION SCRIPT ({formatTime(currentScene.startTime)} - {formatTime(currentScene.endTime)})</span>
+              </span>
+              <span className="text-slate-500">1080P EMBEDDED AAC STEREO AUDIO</span>
+            </div>
+            <p className="text-slate-200 text-sm sm:text-base leading-relaxed font-sans font-medium">
+              "{currentScene.voiceoverText}"
+            </p>
+          </div>
+
+          {/* ALL STAGES SYSTEMATIC FLOW SELECTOR */}
+          <div className="space-y-3 pt-2">
+            <h3 className="text-xs font-mono font-bold text-slate-400 uppercase tracking-widest">
+              COMPLETE 6-STAGE SYSTEMATIC VOICE PROMPT TIMELINE:
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {SAFETY_PURCHASE_SCENES.map((scene) => {
+                const isActive = currentScene.id === scene.id;
+                return (
+                  <div
+                    key={`prompt-card-stage-${scene.id}`}
+                    onClick={() => jumpToTime(scene.startTime)}
+                    className={`p-3.5 rounded-2xl border transition cursor-pointer text-left space-y-2 relative ${
+                      isActive 
+                        ? 'bg-emerald-950/30 border-emerald-500/50 shadow-lg shadow-emerald-500/10' 
+                        : 'bg-slate-950/50 border-slate-800 hover:border-slate-700 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[10px] font-mono">
+                      <span className={`px-2 py-0.5 rounded-md font-bold ${
+                        isActive ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-300'
+                      }`}>
+                        STAGE 0{scene.id}
+                      </span>
+                      <span className="text-slate-500">{formatTime(scene.startTime)} - {formatTime(scene.endTime)}</span>
+                    </div>
+
+                    <h4 className="text-xs font-bold text-white line-clamp-1">
+                      {scene.title}
+                    </h4>
+
+                    <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+                      "{scene.voiceoverText}"
+                    </p>
+
+                    <div className="pt-1 flex items-center justify-between border-t border-slate-900/80 text-[10px] font-mono">
+                      <span className="text-emerald-400 font-semibold">{scene.badgeText}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCopyPrompt(scene.id, scene.voiceoverText);
+                        }}
+                        className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition"
+                        title="Copy this stage prompt"
+                      >
+                        {copiedPromptId === scene.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
       </div>

@@ -1,6 +1,7 @@
 export type SellerType = 'INDIVIDUAL' | 'SOLE_TRADER' | 'REGISTERED_BUSINESS';
 
 export type TransactionState =
+  | 'CREATED'
   | 'LISTING_SELECTED'
   | 'PRE_PAYMENT_PROOF_REQUESTED'
   | 'DRAFT'
@@ -22,9 +23,11 @@ export type TransactionState =
   | 'READY_FOR_FUNDING'
   | 'BUYER_AUTH_CONFIRMED'
   | 'PAYMENT_PENDING'
+  | 'PAYMENT_LOCKED'
   | 'PAYMENT_CONFIRMED'
   | 'PURCHASE_VERIFIED'
   | 'PURCHASE_BLOCKED'
+  | 'PROTECTED_PAYMENT_DISABLED'
   | 'ORDER_CONFIRMED'
   | 'ORDER_PLACED'
   | 'PACKCHECK_PENDING'
@@ -120,6 +123,7 @@ export interface GeminiAgentLog {
   outputDetails: Record<string, any>;
   rationale: string;
   executionTimeMs: number;
+  message?: string;
 }
 
 export interface LocationProofData {

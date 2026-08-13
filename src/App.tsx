@@ -19,7 +19,14 @@ import { QRScannerModal } from './components/QRScannerModal';
 import { StorefrontPage } from './components/StorefrontPage';
 
 export function App() {
-  const [currentRoute, setCurrentRoute] = useState<string>(window.location.pathname);
+  const [currentRoute, setCurrentRoute] = useState<string>(() => {
+    try {
+      const raw = window.location.pathname || '/';
+      return raw.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/';
+    } catch {
+      return '/';
+    }
+  });
   const [isCreateTxModalOpen, setIsCreateTxModalOpen] = useState(false);
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
@@ -28,14 +35,29 @@ export function App() {
 
   // Sync route with browser history
   const navigate = (path: string) => {
-    window.history.pushState({}, '', path);
-    setCurrentRoute(path);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const cleanPath = path.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/';
+    try {
+      window.history.pushState({}, '', cleanPath);
+    } catch (err) {
+      console.warn('Browser pushState restricted in iframe, using local route state:', err);
+    }
+    setCurrentRoute(cleanPath);
+    try {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e) {
+      // ignore
+    }
   };
 
   useEffect(() => {
     const handlePopState = () => {
-      setCurrentRoute(window.location.pathname);
+      try {
+        const raw = window.location.pathname || '/';
+        const clean = raw.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/';
+        setCurrentRoute(clean);
+      } catch {
+        setCurrentRoute('/');
+      }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -43,19 +65,21 @@ export function App() {
 
   // Route matching helper
   const renderRoute = () => {
-    if (currentRoute === '/product' || currentRoute === '/about') {
+    const route = (currentRoute || '/').replace(/\/index\.html$/, '').replace(/\/$/, '') || '/';
+
+    if (route === '/product' || route === '/about') {
       return <ProductPage navigate={navigate} onOpenCreateTx={() => setIsCreateTxModalOpen(true)} />;
     }
-    if (currentRoute === '/how-it-works' || currentRoute === '/pricing') {
-      return <HowItWorksPage navigate={navigate} onOpenCreateTx={() => setIsCreateTxModalOpen(true)} initialTab={currentRoute === '/pricing' ? 'pricing' : 'how-it-works'} />;
+    if (route === '/how-it-works' || route === '/pricing') {
+      return <HowItWorksPage navigate={navigate} onOpenCreateTx={() => setIsCreateTxModalOpen(true)} initialTab={route === '/pricing' ? 'pricing' : 'how-it-works'} />;
     }
-    if (currentRoute === '/integrate' || currentRoute === '/developers' || currentRoute === '/api') {
-      return <IntegratePage navigate={navigate} onOpenCreateTx={() => setIsCreateTxModalOpen(true)} initialTab={currentRoute === '/developers' || currentRoute === '/api' ? 'developers' : 'integrations'} />;
+    if (route === '/integrate' || route === '/developers' || route === '/api') {
+      return <IntegratePage navigate={navigate} onOpenCreateTx={() => setIsCreateTxModalOpen(true)} initialTab={route === '/developers' || route === '/api' ? 'developers' : 'integrations'} />;
     }
-    if (currentRoute === '/security') {
+    if (route === '/security') {
       return <SecurityPage />;
     }
-    if (currentRoute === '/dashboard' || currentRoute === '/ops') {
+    if (route === '/dashboard' || route === '/ops') {
       return (
         <OpsDashboard
           navigate={navigate}
@@ -65,20 +89,20 @@ export function App() {
         />
       );
     }
-    if (currentRoute === '/demo' || currentRoute === '/video' || currentRoute === '/demo-video') {
+    if (route === '/demo' || route === '/video' || route === '/demo-video') {
       return <DemoVideoPage navigate={navigate} onOpenCreateTx={() => setIsCreateTxModalOpen(true)} />;
     }
-    if (currentRoute === '/revenue-flow' || currentRoute === '/revenue' || currentRoute === '/monetization' || currentRoute === '/how-we-make-money') {
+    if (route === '/revenue-flow' || route === '/revenue' || route === '/monetization' || route === '/how-we-make-money') {
       return <RevenueFlowWalkthrough navigate={navigate} onOpenCreateTx={() => setIsCreateTxModalOpen(true)} />;
     }
-    if (currentRoute === '/store' || currentRoute.startsWith('/store/')) {
-      const storeId = currentRoute.startsWith('/store/') ? currentRoute.replace('/store/', '') : 'techworld_store';
+    if (route === '/store' || route.startsWith('/store/')) {
+      const storeId = route.startsWith('/store/') ? route.replace('/store/', '') : 'techworld_store';
       return <StorefrontPage navigate={navigate} onOpenCreateTx={() => setIsCreateTxModalOpen(true)} storeId={storeId} />;
     }
 
     // Dynamic Checkout Route: /pay/:txId
-    if (currentRoute.startsWith('/pay/')) {
-      const txId = currentRoute.replace('/pay/', '').trim() || 'AR-DEMO-001';
+    if (route.startsWith('/pay/')) {
+      const txId = route.replace('/pay/', '').trim() || 'AR-DEMO-001';
       return <CheckoutPage transactionId={txId} navigate={navigate} />;
     }
 
